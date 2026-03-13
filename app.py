@@ -1,90 +1,129 @@
 import json
-import time
-from datetime import datetime
-from threading import Thread
-import queue
 import os
+import queue
+from datetime import datetime
 
+import requests
+from flask import Flask, Response, jsonify, render_template, request
 from flask_cors import CORS
-from flask import Flask, request, jsonify, render_template, Response
 
-# --- Flask Server Setup ---
 app = Flask(__name__, template_folder='templates')
 CORS(app, origins="*")
 
-# This list holds all Q&A data received. It acts as our 'database'.
-# In a real production app, this would be a persistent database.
-# For this simple feed, it's in-memory.
 qa_store = []
-
-# Queue for Server-Sent Events (SSE) clients
 sse_queues = []
+
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+
+
+def improve_answers_with_gemini(page_text, raw_results, url):
+    if not GEMINI_API_KEY:
+        return raw_results
+
+    questions = [r['question'] for r in raw_results]
+    questions_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
+
+    prompt = f"""You are analyzing a webpage to find accurate answers to questions found on that page.
+
+Page URL: {url}
+
+Page content (truncated):
+{page_text[:8000]}
+
+Questions found on this page:
+{questions_text}
+
+For each question, find the most accurate and complete answer from the page content above.
+If the answer is not clearly on the page, say "Answer not found on this page."
+Keep answers concise but complete (1-3 sentences max).
+
+Respond ONLY with a JSON array in this exact format, no other text:
+[
+  {{"question": "exact question text", "answer": "answer text"}},
+  ...
+]"""
+
+    try:
+        resp = requests.post(
+            f"{GEMINI_URL}?key={GEMINI_API_KEY}",
+            json={"contents": [{"parts": [{"text": prompt}]}]},
+            timeout=15
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
+    except Exception as e:
+        print(f"Gemini error: {e}")
+        return raw_results
+
 
 @app.route('/receive_qa', methods=['POST'])
 def receive_qa():
-    """Endpoint for the browser extension to POST Q&A data."""
     if request.is_json:
         data = request.get_json()
         if data and 'results' in data and 'url' in data:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_entry = {"timestamp": timestamp, **data}
-            qa_store.insert(0, new_entry) # Add to the beginning (newest first)
+            raw_results = data['results']
+            page_text = data.get('pageText', '')
+            url = data['url']
 
-            # Notify all connected SSE clients
-            for q in list(sse_queues): # Iterate over a copy to avoid issues if client disconnects
+            improved_results = improve_answers_with_gemini(page_text, raw_results, url) if page_text and GEMINI_API_KEY else raw_results
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_entry = {"timestamp": timestamp, "url": url, "results": improved_results}
+            qa_store.insert(0, new_entry)
+
+            for q in list(sse_queues):
                 try:
                     q.put(new_entry)
                 except Exception:
-                    # Handle disconnected clients gracefully
                     pass
 
-            return jsonify({"status": "success", "message": "Q&A received"}), 200
-    return jsonify({"status": "error", "message": "Request must be JSON and contain results/url"}), 400
+            return jsonify({"status": "success"}), 200
+    return jsonify({"status": "error"}), 400
+
 
 @app.route('/clear', methods=['POST'])
 def clear_qa_store():
-    """Endpoint to clear all stored Q&A data."""
     global qa_store
     qa_store = []
-    # Optionally, notify clients that store has been cleared
     for q in list(sse_queues):
         try:
             q.put({"type": "clear"})
         except Exception:
             pass
-    return jsonify({"status": "success", "message": "Q&A store cleared"}), 200
+    return jsonify({"status": "success"}), 200
+
 
 @app.route('/')
 def index():
-    """Serves the main web page for displaying Q&A."""
     return render_template('index.html')
+
 
 @app.route('/stream')
 def stream():
-    """Endpoint for Server-Sent Events (SSE) to push real-time updates."""
     client_queue = queue.Queue()
     sse_queues.append(client_queue)
 
     def generate():
-        # First, send all existing data to the new client (newest first for UI)
         for entry in qa_store:
             yield f"data: {json.dumps(entry)}\n\n"
-        
-        # Then, keep sending new updates as they arrive
         while True:
             try:
-                # Wait for new data, or send a ping to keep connection alive
-                new_qa = client_queue.get(timeout=25) 
+                new_qa = client_queue.get(timeout=25)
                 yield f"data: {json.dumps(new_qa)}\n\n"
             except queue.Empty:
                 yield ": ping\n\n"
             except GeneratorExit:
-                # Client disconnected, remove from active queues
                 if client_queue in sse_queues:
                     sse_queues.remove(client_queue)
                 break
-            except Exception as e:
-                print(f"SSE error: {e}")
+            except Exception:
                 if client_queue in sse_queues:
                     sse_queues.remove(client_queue)
                 break
@@ -93,17 +132,4 @@ def stream():
 
 
 if __name__ == "__main__":
-    # Ensure the templates directory exists for Flask to find index.html
-    os.makedirs(os.path.join(os.path.dirname(__file__), 'templates'), exist_ok=True)
-
-    print("\n--- Q&A Live Web Feed (Cloud-Ready) ---")
-    print("  Flask server starting...")
-    print("  This app is designed for deployment to a cloud platform.")
-    print("  It will receive Q&A from your browser extension and serve it live to your phone.")
-    print("  Access on your phone's browser at the deployed public URL.")
-    print("  (e.g., https://your-app-name.onrender.com)")
-    print("\n  Local testing: http://127.0.0.1:5000 (after `pip install flask` and `python app.py`)")
-    print("  Waiting for Q&A from browser extension...")
-
-    # Listen on all public IPs (0.0.0.0) in a cloud environment
-    app.run(host='0.0.0.0', port=os.environ.get('PORT', 5000), debug=False, use_reloader=False)
+app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False, use_reloader=False)
