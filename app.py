@@ -5,10 +5,12 @@ from threading import Thread
 import queue
 import os
 
+from flask_cors import CORS
 from flask import Flask, request, jsonify, render_template, Response
 
 # --- Flask Server Setup ---
 app = Flask(__name__, template_folder='templates')
+CORS(app, origins="*")
 
 # This list holds all Q&A data received. It acts as our 'database'.
 # In a real production app, this would be a persistent database.
