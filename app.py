@@ -75,7 +75,7 @@ def receive_qa():
             raw_results = data['results']
             page_text = data.get('pageText', '')
             url = data['url']
-if page_text and GEMINI_API_KEY:
+            if page_text and GEMINI_API_KEY:
                 improved_results = improve_answers_with_gemini(page_text, raw_results, url)
             else:
                 improved_results = raw_results
