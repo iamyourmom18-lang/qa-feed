@@ -75,8 +75,7 @@ def receive_qa():
             raw_results = data['results']
             page_text = data.get('pageText', '')
             url = data['url']
-
-            if page_text and GEMINI_API_KEY:
+if page_text and GEMINI_API_KEY:
                 improved_results = improve_answers_with_gemini(page_text, raw_results, url)
             else:
                 improved_results = raw_results
@@ -123,7 +122,76 @@ def stream():
 
     def generate():
         for entry in qa_store:
-yield f"data: {json.dumps(entry)}\n\n"
+            yield f"data: {json.dumps(entry)}\n\n"
+        while True:
+            try:
+                new_qa = client_queue.get(timeout=25)
+                yield f"data: {json.dumps(new_qa)}\n\n"
+            except queue.Empty:
+                yield ": ping\n\n"
+            except GeneratorExit:
+                if client_queue in sse_queues:
+                    sse_queues.remove(client_queue)
+                break
+            except Exception:
+                if client_queue in sse_queues:
+                    sse_queues.remove(client_queue)
+                break
+
+    return Response(generate(), mimetype='text/event-stream')
+
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)),
+            debug=False, use_reloader=False)
+if page_text and GEMINI_API_KEY:
+                improved_results = improve_answers_with_gemini(page_text, raw_results, url)
+            else:
+                improved_results = raw_results
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            new_entry = {
+                "timestamp": timestamp,
+                "url": url,
+                "results": improved_results
+            }
+            qa_store.insert(0, new_entry)
+
+            for q in list(sse_queues):
+                try:
+                    q.put(new_entry)
+                except Exception:
+                    pass
+
+            return jsonify({"status": "success"}), 200
+    return jsonify({"status": "error"}), 400
+
+
+@app.route('/clear', methods=['GET', 'POST'])
+def clear_qa_store():
+    global qa_store
+    qa_store = []
+    for q in list(sse_queues):
+        try:
+            q.put({"type": "clear"})
+        except Exception:
+            pass
+    return jsonify({"status": "success"}), 200
+
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+@app.route('/stream')
+def stream():
+    client_queue = queue.Queue()
+    sse_queues.append(client_queue)
+
+    def generate():
+        for entry in qa_store:
+            yield f"data: {json.dumps(entry)}\n\n"
         while True:
             try:
                 new_qa = client_queue.get(timeout=25)
