@@ -24,23 +24,26 @@ def improve_answers_with_gemini(page_text, raw_results, url):
     questions = [r['question'] for r in raw_results]
     questions_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
 
-    prompt = f"""You are analyzing a webpage to find accurate answers to questions found on that page.
+       prompt = f"""You are a knowledgeable assistant helping answer questions found on a screen.
 
 Page URL: {url}
 
-Page content (truncated):
+Screen content (what was visible on screen):
 {page_text[:8000]}
 
-Questions found on this page:
+Questions detected on screen:
 {questions_text}
 
-For each question, find the most accurate and complete answer from the page content above.
-If the answer is not clearly on the page, say "Answer not found on this page."
-Keep answers concise but complete (1-3 sentences max).
+For each question:
+- If it is a multiple choice question, identify the CORRECT answer from the options and explain briefly why.
+- If it is a fill-in-the-blank or open question, provide the correct answer using your knowledge.
+- If context from the screen helps, use it. Otherwise use your general knowledge.
+- Keep answers short and direct (1-2 sentences max).
+- Never say "I don't know" — always give your best answer.
 
 Respond ONLY with a JSON array in this exact format, no other text:
 [
-  {{"question": "exact question text", "answer": "answer text"}},
+  {{"question": "exact question text", "answer": "your answer here"}},
   ...
 ]"""
 
