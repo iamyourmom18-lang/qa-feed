@@ -24,7 +24,7 @@ def improve_answers_with_gemini(page_text, raw_results, url):
     questions = [r['question'] for r in raw_results]
     questions_text = "\n".join([f"{i+1}. {q}" for i, q in enumerate(questions)])
 
-       prompt = f"""You are a knowledgeable assistant helping answer questions found on a screen.
+    prompt = f"""You are a knowledgeable assistant helping answer questions found on a screen.
 
 Page URL: {url}
 
@@ -39,12 +39,11 @@ For each question:
 - If it is a fill-in-the-blank or open question, provide the correct answer using your knowledge.
 - If context from the screen helps, use it. Otherwise use your general knowledge.
 - Keep answers short and direct (1-2 sentences max).
-- Never say "I don't know" — always give your best answer.
+- Never say "I don't know" -- always give your best answer.
 
 Respond ONLY with a JSON array in this exact format, no other text:
 [
-  {{"question": "exact question text", "answer": "your answer here"}},
-  ...
+  {{"question": "exact question text", "answer": "your answer here"}}
 ]"""
 
     try:
@@ -55,12 +54,14 @@ Respond ONLY with a JSON array in this exact format, no other text:
         )
         resp.raise_for_status()
         data = resp.json()
-        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+        text = data['candidates'][0]['content']['parts'][0]['text']
+        text = text.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
-        return json.loads(text.strip())
+        improved = json.loads(text.strip())
+        return improved
     except Exception as e:
         print(f"Gemini error: {e}")
         return raw_results
@@ -75,10 +76,17 @@ def receive_qa():
             page_text = data.get('pageText', '')
             url = data['url']
 
-            improved_results = improve_answers_with_gemini(page_text, raw_results, url) if page_text and GEMINI_API_KEY else raw_results
+            if page_text and GEMINI_API_KEY:
+                improved_results = improve_answers_with_gemini(page_text, raw_results, url)
+            else:
+                improved_results = raw_results
 
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            new_entry = {"timestamp": timestamp, "url": url, "results": improved_results}
+            new_entry = {
+                "timestamp": timestamp,
+                "url": url,
+                "results": improved_results
+            }
             qa_store.insert(0, new_entry)
 
             for q in list(sse_queues):
@@ -91,7 +99,7 @@ def receive_qa():
     return jsonify({"status": "error"}), 400
 
 
-@app.route('/clear', methods=['POST'])
+@app.route('/clear', methods=['GET', 'POST'])
 def clear_qa_store():
     global qa_store
     qa_store = []
@@ -115,7 +123,7 @@ def stream():
 
     def generate():
         for entry in qa_store:
-            yield f"data: {json.dumps(entry)}\n\n"
+yield f"data: {json.dumps(entry)}\n\n"
         while True:
             try:
                 new_qa = client_queue.get(timeout=25)
@@ -133,5 +141,7 @@ def stream():
 
     return Response(generate(), mimetype='text/event-stream')
 
+
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)),
+            debug=False, use_reloader=False)
